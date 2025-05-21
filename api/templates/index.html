@@ -21,8 +21,27 @@
         .button:hover {
             background-color: #357ae8;
         }
+        .unsubscribe-btn {
+            background-color: #db4437;
+            color: white;
+            padding: 5px 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .unsubscribe-btn:hover {
+            background-color: #c53929;
+        }
+        .batch-actions {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
         .container {
-            max-width: 800px;
+            max-width: 1000px;
             margin: 0 auto;
         }
         .form-group {
@@ -43,6 +62,25 @@
         .results {
             margin-top: 30px;
         }
+        .loading {
+            display: none;
+            text-align: center;
+            margin-top: 15px;
+        }
+        .success-message {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            display: none;
+        }
+        .checkbox-column {
+            text-align: center;
+        }
+        .select-all {
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
@@ -51,7 +89,7 @@
 
         {% if not authenticated %}
             <p>Connect your Gmail account to analyze which senders include unsubscribe links in their emails.</p>
-            <p>This app uses Google's secure OAuth authentication—your password is never shared with us.</p>
+            <p>This app uses Google's secure OAuth authentication — your password is never shared with us.</p>
             <a href="/login" class="button">Login with Google</a>
         {% else %}
             <p>You're connected to Gmail! Configure your scan parameters below.</p>
@@ -78,6 +116,12 @@
                 <a href="/logout" style="margin-left: 10px;">Logout</a>
             </form>
 
+            <div id="loading" class="loading">
+                <p>Processing your request... This may take a moment.</p>
+            </div>
+
+            <div id="success-message" class="success-message"></div>
+
             {% if error %}
                 <div class="error">
                     <h3>Error occurred:</h3>
@@ -88,20 +132,51 @@
             {% if results is not none %}
                 <div class="results">
                     {% if results %}
+                        <div class="batch-actions">
+                            <h3>Batch Actions</h3>
+                            <div class="select-all">
+                                <input type="checkbox" id="select-all-checkbox">
+                                <label for="select-all-checkbox">Select All</label>
+                            </div>
+                            <button id="batch-unsubscribe-btn" class="button">Unsubscribe from Selected</button>
+                            <button id="unsubscribe-high-percentage-btn" class="button">Unsubscribe from All ≥95%</button>
+                        </div>
+
                         <h2>Senders with Unsubscribe Links</h2>
-                        <table>
+                        <table id="results-table">
                             <tr>
+                                <th class="checkbox-column">Select</th>
                                 <th>Sender</th>
                                 <th>Emails with Unsubscribe Link</th>
-                                <th>Total Emails Received</th>
+                                <th>Total Emails</th>
                                 <th>Percentage</th>
+                                <th>Action</th>
                             </tr>
                             {% for row in results %}
-                            <tr>
+                            <tr data-sender="{{ row.sender }}" data-message-id="{{ row.message_id }}">
+                                <td class="checkbox-column">
+                                    <label>
+                                        <input type="checkbox" class="sender-checkbox" data-sender="{{ row.sender }}">
+                                    </label>
+                                </td>
                                 <td>{{ row.sender }}</td>
                                 <td>{{ row.unsubscribe_count }}</td>
                                 <td>{{ row.total_count }}</td>
                                 <td>{{ (row.unsubscribe_count / row.total_count * 100) | round(1) }}%</td>
+                                <td>
+                                    {% if row.unsubscribe_links %}
+                                        <button
+                                            class="unsubscribe-btn"
+                                            data-sender="{{ row.sender }}"
+                                            data-message-id="{{ row.message_id }}"
+                                            data-method="{{ 'http' if row.unsubscribe_links.get('http') else 'mailto' }}"
+                                        >
+                                            Unsubscribe
+                                        </button>
+                                    {% else %}
+                                        No link
+                                    {% endif %}
+                                </td>
                             </tr>
                             {% endfor %}
                         </table>
@@ -112,5 +187,177 @@
             {% endif %}
         {% endif %}
     </div>
+
+    <script>
+        // Handle individual unsubscribe button clicks
+        document.addEventListener('DOMContentLoaded', function() {
+            const unsubButtons = document.querySelectorAll('.unsubscribe-btn');
+            const loading = document.getElementById('loading');
+            const successMessage = document.getElementById('success-message');
+            const selectAllCheckbox = document.getElementById('select-all-checkbox');
+            const batchUnsubscribeBtn = document.getElementById('batch-unsubscribe-btn');
+            const highPercentageBtn = document.getElementById('unsubscribe-high-percentage-btn');
+
+            // Individual unsubscribe
+            unsubButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    const sender = this.dataset.sender;
+                    const method = this.dataset.method;
+                    const messageId = this.dataset.messageId;
+
+                    loading.style.display = 'block';
+
+                    const formData = new FormData();
+                    formData.append('sender', sender);
+                    formData.append('method', method);
+                    formData.append('message_id', messageId);
+
+                    fetch('/unsubscribe', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        loading.style.display = 'none';
+
+                        if (data.success) {
+                            if (data.redirect) {
+                                // Open the unsubscribe link in a new tab
+                                window.open(data.redirect, '_blank');
+
+                                // Show the success message
+                                successMessage.textContent = `Unsubscribe page opened for ${sender}`;
+                                successMessage.style.display = 'block';
+                            } else {
+                                // Show success for mailto unsubscribe
+                                successMessage.textContent = `Unsubscribe request sent for ${sender}`;
+                                successMessage.style.display = 'block';
+                            }
+
+                            // Disable the button
+                            this.disabled = true;
+                            this.textContent = 'Unsubscribed';
+                        } else {
+                            alert('Error: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        loading.style.display = 'none';
+                        alert('Error: ' + error);
+                    });
+                });
+            });
+
+            // Select all checkboxes
+            if (selectAllCheckbox) {
+                selectAllCheckbox.addEventListener('change', function() {
+                    const checkboxes = document.querySelectorAll('.sender-checkbox');
+                    checkboxes.forEach(checkbox => {
+                        checkbox.checked = this.checked;
+                    });
+                });
+            }
+
+            // Batch unsubscribe
+            if (batchUnsubscribeBtn) {
+                batchUnsubscribeBtn.addEventListener('click', function() {
+                    const selectedCheckboxes = document.querySelectorAll('.sender-checkbox:checked');
+
+                    if (selectedCheckboxes.length === 0) {
+                        alert('Please select at least one sender to unsubscribe from.');
+                        return;
+                    }
+
+                    const senders = Array.from(selectedCheckboxes).map(checkbox => checkbox.dataset.sender);
+
+                    if (confirm(`Are you sure you want to unsubscribe from ${senders.length} selected senders?`)) {
+                        loading.style.display = 'block';
+
+                        fetch('/batch_unsubscribe', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ senders: senders })
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            loading.style.display = 'none';
+
+                            if (data.success) {
+                                successMessage.textContent = `Processed ${data.results.length} unsubscribe requests. Check individual results for details.`;
+                                successMessage.style.display = 'block';
+
+                                // Disable buttons for processed senders
+                                senders.forEach(sender => {
+                                    const row = document.querySelector(`tr[data-sender="${sender}"]`);
+                                    const button = row.querySelector('.unsubscribe-btn');
+                                    if (button) {
+                                        button.disabled = true;
+                                        button.textContent = 'Unsubscribed';
+                                    }
+                                });
+                            } else {
+                                alert('Error: ' + data.error);
+                            }
+                        })
+                        .catch(error => {
+                            loading.style.display = 'none';
+                            alert('Error: ' + error);
+                        });
+                    }
+                });
+            }
+
+            // Unsubscribe from high-percentage senders
+            if (highPercentageBtn) {
+                highPercentageBtn.addEventListener('click', function() {
+                    if (confirm('Are you sure you want to unsubscribe from all senders with ≥95% unsubscribe rate?')) {
+                        loading.style.display = 'block';
+
+                        fetch('/unsubscribe_all_high_percentage', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ threshold: 95 })
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            loading.style.display = 'none';
+
+                            if (data.success) {
+                                successMessage.textContent = `Processed unsubscribe requests for all high-percentage senders.`;
+                                successMessage.style.display = 'block';
+
+                                // Update the UI to reflect changes
+                                const rows = document.querySelectorAll('tr[data-sender]');
+                                rows.forEach(row => {
+                                    const cells = row.querySelectorAll('td');
+                                    const unsubCount = parseInt(cells[2].textContent);
+                                    const totalCount = parseInt(cells[3].textContent);
+                                    const percentage = (unsubCount / totalCount) * 100;
+
+                                    if (percentage >= 95) {
+                                        const button = row.querySelector('.unsubscribe-btn');
+                                        if (button) {
+                                            button.disabled = true;
+                                            button.textContent = 'Unsubscribed';
+                                        }
+                                    }
+                                });
+                            } else {
+                                alert('Error: ' + data.error);
+                            }
+                        })
+                        .catch(error => {
+                            loading.style.display = 'none';
+                            alert('Error: ' + error);
+                        });
+                    }
+                });
+            }
+        });
+    </script>
 </body>
 </html>
