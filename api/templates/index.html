@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>Email Unsubscribe Analysis</title>
     <style>
@@ -8,42 +8,109 @@
         th, td { border: 1px solid #ccc; padding: 8px; }
         th { background: #eee; }
         .error { color: red; }
+        .button {
+            background-color: #4285f4;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+        .button:hover {
+            background-color: #357ae8;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"], input[type="number"] {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .results {
+            margin-top: 30px;
+        }
     </style>
 </head>
 <body>
-    <h1>Email Unsubscribe Sender Analyzer</h1>
-    <form method="post">
-        <label>IMAP Server:<br><input name="imap_server" value="imap.gmail.com" required></label><br><br>
-        <label>Email Account:<br><input name="email_account" required></label><br><br>
-        <label>Password:<br><input type="password" name="email_password" required></label><br><br>
-        <label>Mailbox to Scan:<br><input name="mailbox_to_scan" value="INBOX"></label><br><br>
-        <label>Days to Scan:<br><input name="days_to_scan" value="60"></label><br><br>
-        <label>Min Emails with Unsubscribe:<br><input name="min_count" value="3"></label><br><br>
-        <button type="submit">Scan</button>
-    </form>
-    {% if error %}
-        <div class="error">{{ error }}</div>
-    {% endif %}
-    {% if results is not none %}
-        {% if results %}
-            <h2>Senders with Unsubscribe Links</h2>
-            <table>
-                <tr>
-                    <th>Sender</th>
-                    <th>Emails with Unsubscribe Link</th>
-                    <th>Total Emails Received</th>
-                </tr>
-                {% for row in results %}
-                <tr>
-                    <td>{{ row.sender }}</td>
-                    <td>{{ row.unsubscribe_count }}</td>
-                    <td>{{ row.total_count }}</td>
-                </tr>
-                {% endfor %}
-            </table>
+    <div class="container">
+        <h1>Email Unsubscribe Sender Analyzer</h1>
+
+        {% if not authenticated %}
+            <p>Connect your Gmail account to analyze which senders include unsubscribe links in their emails.</p>
+            <p>This app uses Google's secure OAuth authentication—your password is never shared with us.</p>
+            <a href="/login" class="button">Login with Google</a>
         {% else %}
-            <p>No senders met the threshold.</p>
+            <p>You're connected to Gmail! Configure your scan parameters below.</p>
+            <form action="/scan" method="POST">
+                <div class="form-group">
+                    <label for="days_to_scan">Days to Scan:</label>
+                    <input type="number" id="days_to_scan" name="days_to_scan" value="60" min="1" max="365">
+                    <small>How far back for analyzing emails (in days)</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="min_count">Min Emails with Unsubscribe:</label>
+                    <input type="number" id="min_count" name="min_count" value="3" min="1">
+                    <small>Only show senders who sent at least this many emails with unsubscribe links</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="max_messages">Max Messages to Scan:</label>
+                    <input type="number" id="max_messages" name="max_messages" value="100" min="10" max="500">
+                    <small>Maximum number of messages to analyze (keep under 500 for the best performance)</small>
+                </div>
+
+                <button type="submit" class="button">Scan Gmail</button>
+                <a href="/logout" style="margin-left: 10px;">Logout</a>
+            </form>
+
+            {% if error %}
+                <div class="error">
+                    <h3>Error occurred:</h3>
+                    <p>{{ error }}</p>
+                </div>
+            {% endif %}
+
+            {% if results is not none %}
+                <div class="results">
+                    {% if results %}
+                        <h2>Senders with Unsubscribe Links</h2>
+                        <table>
+                            <tr>
+                                <th>Sender</th>
+                                <th>Emails with Unsubscribe Link</th>
+                                <th>Total Emails Received</th>
+                                <th>Percentage</th>
+                            </tr>
+                            {% for row in results %}
+                            <tr>
+                                <td>{{ row.sender }}</td>
+                                <td>{{ row.unsubscribe_count }}</td>
+                                <td>{{ row.total_count }}</td>
+                                <td>{{ (row.unsubscribe_count / row.total_count * 100) | round(1) }}%</td>
+                            </tr>
+                            {% endfor %}
+                        </table>
+                    {% else %}
+                        <p>No senders met the threshold. Try adjusting the parameters or scanning more messages.</p>
+                    {% endif %}
+                </div>
+            {% endif %}
         {% endif %}
-    {% endif %}
+    </div>
 </body>
 </html>
