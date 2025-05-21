@@ -575,7 +575,7 @@ def batch_delete_emails():
             if isinstance(resp, tuple):
                 resp_data = resp[0].get_json()
             else:
-                resp_data = resp
+                resp_data = resp.get_json() if hasattr(resp, 'get_json') else resp
 
             count = resp_data.get('count', 0)
             total_deleted += count
