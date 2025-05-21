@@ -59,6 +59,3 @@ instance/
 # System files
 .DS_Store
 Thumbs.db
-
-#AppPassword
-AppPassword.txt

@@ -3,3 +3,4 @@ google-auth-oauthlib~=1.2.2
 google-api-python-client~=2.169.0
 requests
 protobuf~=6.31.0
+python-dotenv

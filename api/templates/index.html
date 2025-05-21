@@ -139,6 +139,7 @@
                                 <label for="select-all-checkbox">Select All</label>
                             </div>
                             <button id="batch-unsubscribe-btn" class="button">Unsubscribe from Selected</button>
+                            <button id="batch-delete-emails-btn" class="button" style="background-color: #34a853; display: none;">Delete Emails from Selected</button>
                             <button id="unsubscribe-high-percentage-btn" class="button">Unsubscribe from All ≥95%</button>
                         </div>
 
@@ -150,7 +151,7 @@
                                 <th>Emails with Unsubscribe Link</th>
                                 <th>Total Emails</th>
                                 <th>Percentage</th>
-                                <th>Action</th>
+                                <th>Actions</th>
                             </tr>
                             {% for row in results %}
                             <tr data-sender="{{ row.sender }}" data-message-id="{{ row.message_id }}">
@@ -173,6 +174,13 @@
                                         >
                                             Unsubscribe
                                         </button>
+                                        <button
+                                            class="delete-emails-btn"
+                                            data-sender="{{ row.sender }}"
+                                            style="display: none; background-color: #34a853; margin-left: 5px;"
+                                        >
+                                            Delete Emails
+                                        </button>
                                     {% else %}
                                         No link
                                     {% endif %}
@@ -192,11 +200,46 @@
         // Handle individual unsubscribe button clicks
         document.addEventListener('DOMContentLoaded', function() {
             const unsubButtons = document.querySelectorAll('.unsubscribe-btn');
+            const deleteButtons = document.querySelectorAll('.delete-emails-btn');
             const loading = document.getElementById('loading');
             const successMessage = document.getElementById('success-message');
             const selectAllCheckbox = document.getElementById('select-all-checkbox');
             const batchUnsubscribeBtn = document.getElementById('batch-unsubscribe-btn');
+            const batchDeleteEmailsBtn = document.getElementById('batch-delete-emails-btn');
             const highPercentageBtn = document.getElementById('unsubscribe-high-percentage-btn');
+
+            // Check if there are any unsubscribed senders in the session
+            // This will be used to show/hide delete buttons
+            fetch('/check_unsubscribed_senders', {
+                method: 'GET',
+                credentials: 'same-origin'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.unsubscribed_senders && data.unsubscribed_senders.length > 0) {
+                    // Show batch delete button
+                    batchDeleteEmailsBtn.style.display = 'inline-block';
+
+                    // Show individual delete buttons for unsubscribed senders
+                    data.unsubscribed_senders.forEach(sender => {
+                        const row = document.querySelector(`tr[data-sender="${sender}"]`);
+                        if (row) {
+                            const deleteBtn = row.querySelector('.delete-emails-btn');
+                            const unsubBtn = row.querySelector('.unsubscribe-btn');
+                            if (deleteBtn) {
+                                deleteBtn.style.display = 'inline-block';
+                            }
+                            if (unsubBtn) {
+                                unsubBtn.disabled = true;
+                                unsubBtn.textContent = 'Unsubscribed';
+                            }
+                        }
+                    });
+                }
+            })
+            .catch(error => {
+                console.error('Error checking unsubscribed senders:', error);
+            });
 
             // Individual unsubscribe
             unsubButtons.forEach(button => {
@@ -214,6 +257,7 @@
 
                     fetch('/unsubscribe', {
                         method: 'POST',
+                        credentials: 'same-origin',
                         body: formData
                     })
                     .then(response => response.json())
@@ -237,6 +281,16 @@
                             // Disable the button
                             this.disabled = true;
                             this.textContent = 'Unsubscribed';
+
+                            // Show the delete button for this sender
+                            const row = this.closest('tr');
+                            const deleteBtn = row.querySelector('.delete-emails-btn');
+                            if (deleteBtn) {
+                                deleteBtn.style.display = 'inline-block';
+                            }
+
+                            // Show the batch delete button
+                            batchDeleteEmailsBtn.style.display = 'inline-block';
                         } else {
                             alert('Error: ' + data.error);
                         }
@@ -245,6 +299,45 @@
                         loading.style.display = 'none';
                         alert('Error: ' + error);
                     });
+                });
+            });
+
+            // Individual delete emails
+            deleteButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    const sender = this.dataset.sender;
+
+                    if (confirm(`Are you sure you want to delete all emails from ${sender}?`)) {
+                        loading.style.display = 'block';
+
+                        const formData = new FormData();
+                        formData.append('sender', sender);
+
+                        fetch('/delete_emails', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            body: formData
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            loading.style.display = 'none';
+
+                            if (data.success) {
+                                successMessage.textContent = data.message;
+                                successMessage.style.display = 'block';
+
+                                // Disable the button
+                                this.disabled = true;
+                                this.textContent = 'Emails Deleted';
+                            } else {
+                                alert('Error: ' + data.error);
+                            }
+                        })
+                        .catch(error => {
+                            loading.style.display = 'none';
+                            alert('Error: ' + error);
+                        });
+                    }
                 });
             });
 
@@ -278,6 +371,7 @@
                             headers: {
                                 'Content-Type': 'application/json'
                             },
+                            credentials: 'same-origin',
                             body: JSON.stringify({ senders: senders })
                         })
                         .then(response => response.json())
@@ -288,15 +382,22 @@
                                 successMessage.textContent = `Processed ${data.results.length} unsubscribe requests. Check individual results for details.`;
                                 successMessage.style.display = 'block';
 
-                                // Disable buttons for processed senders
+                                // Disable buttons for processed senders and show delete buttons
                                 senders.forEach(sender => {
                                     const row = document.querySelector(`tr[data-sender="${sender}"]`);
-                                    const button = row.querySelector('.unsubscribe-btn');
-                                    if (button) {
-                                        button.disabled = true;
-                                        button.textContent = 'Unsubscribed';
+                                    const unsubButton = row.querySelector('.unsubscribe-btn');
+                                    const deleteButton = row.querySelector('.delete-emails-btn');
+                                    if (unsubButton) {
+                                        unsubButton.disabled = true;
+                                        unsubButton.textContent = 'Unsubscribed';
+                                    }
+                                    if (deleteButton) {
+                                        deleteButton.style.display = 'inline-block';
                                     }
                                 });
+
+                                // Show the batch delete button
+                                batchDeleteEmailsBtn.style.display = 'inline-block';
                             } else {
                                 alert('Error: ' + data.error);
                             }
@@ -309,18 +410,111 @@
                 });
             }
 
+            // Batch delete emails
+            if (batchDeleteEmailsBtn) {
+                batchDeleteEmailsBtn.addEventListener('click', function() {
+                    const selectedCheckboxes = document.querySelectorAll('.sender-checkbox:checked');
+
+                    if (selectedCheckboxes.length === 0) {
+                        alert('Please select at least one sender to delete emails from.');
+                        return;
+                    }
+
+                    const senders = Array.from(selectedCheckboxes).map(checkbox => checkbox.dataset.sender);
+
+                    // Filter to only include unsubscribed senders
+                    fetch('/check_unsubscribed_senders', {
+                        method: 'GET',
+                        credentials: 'same-origin'
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success && data.unsubscribed_senders) {
+                            const unsubscribedSenders = data.unsubscribed_senders;
+                            const eligibleSenders = senders.filter(sender => unsubscribedSenders.includes(sender));
+
+                            if (eligibleSenders.length === 0) {
+                                alert('None of the selected senders have been unsubscribed from. You must unsubscribe before deleting emails.');
+                                return;
+                            }
+
+                            if (confirm(`Are you sure you want to delete all emails from ${eligibleSenders.length} selected senders?`)) {
+                                loading.style.display = 'block';
+
+                                fetch('/batch_delete_emails', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json'
+                                    },
+                                    credentials: 'same-origin',
+                                    body: JSON.stringify({ senders: eligibleSenders })
+                                })
+                                .then(response => response.json())
+                                .then(data => {
+                                    loading.style.display = 'none';
+
+                                    if (data.success) {
+                                        successMessage.textContent = data.message;
+                                        successMessage.style.display = 'block';
+
+                                        // Disable delete buttons for processed senders
+                                        eligibleSenders.forEach(sender => {
+                                            const row = document.querySelector(`tr[data-sender="${sender}"]`);
+                                            const deleteButton = row.querySelector('.delete-emails-btn');
+                                            if (deleteButton) {
+                                                deleteButton.disabled = true;
+                                                deleteButton.textContent = 'Emails Deleted';
+                                            }
+                                        });
+                                    } else {
+                                        alert('Error: ' + data.error);
+                                    }
+                                })
+                                .catch(error => {
+                                    loading.style.display = 'none';
+                                    alert('Error: ' + error);
+                                });
+                            }
+                        } else {
+                            alert('Error checking unsubscribed senders');
+                        }
+                    })
+                    .catch(error => {
+                        alert('Error: ' + error);
+                    });
+                });
+            }
+
             // Unsubscribe from high-percentage senders
             if (highPercentageBtn) {
                 highPercentageBtn.addEventListener('click', function() {
                     if (confirm('Are you sure you want to unsubscribe from all senders with ≥95% unsubscribe rate?')) {
                         loading.style.display = 'block';
 
+                        // Find all senders with ≥95% unsubscribe rate
+                        const highPercentageSenders = [];
+                        const rows = document.querySelectorAll('tr[data-sender]');
+                        rows.forEach(row => {
+                            const cells = row.querySelectorAll('td');
+                            const unsubCount = parseInt(cells[2].textContent);
+                            const totalCount = parseInt(cells[3].textContent);
+                            const percentage = (unsubCount / totalCount) * 100;
+
+                            if (percentage >= 95) {
+                                highPercentageSenders.push(row.dataset.sender);
+                            }
+                        });
+
                         fetch('/unsubscribe_all_high_percentage', {
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json'
                             },
-                            body: JSON.stringify({ threshold: 95 })
+                            credentials: 'same-origin',
+                            body: JSON.stringify({ 
+                                threshold: 95,
+                                senders: highPercentageSenders
+                            })
                         })
                         .then(response => response.json())
                         .then(data => {

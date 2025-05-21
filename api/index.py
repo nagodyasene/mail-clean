@@ -1,4 +1,5 @@
 import os
+import json
 from flask import Flask, render_template, redirect, request, session, url_for, jsonify
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -194,12 +195,17 @@ def scan():
                         'links': links
                     })
 
-        results = []
+        # Full results for display in the template
+        display_results = []
+        # Minimal results for storage in session (to reduce cookie size)
+        session_results = []
+
         for sender, count in sorted(senders_with_unsub.items(), key=lambda x: x[1], reverse=True):
             if count >= min_unsub:
                 # Get the first unsubscribe link we found for this sender (most recent)
                 unsub_info = unsubscribe_links[sender][0] if unsubscribe_links[sender] else {}
 
+                # Full result for display
                 sender_result = {
                     'sender': sender,
                     'sender_full': sender_emails.get(sender, sender),
@@ -208,11 +214,20 @@ def scan():
                     'unsubscribe_links': unsub_info.get('links', {}),
                     'message_id': unsub_info.get('message_id', '')
                 }
-                results.append(sender_result)
+                display_results.append(sender_result)
 
-        session['scan_results'] = results  # Store in session for unsubscribe operations
+                # Minimal result for session storage - only essential data for unsubscribe operations
+                session_result = {
+                    'sender': sender,
+                    'unsubscribe_links': unsub_info.get('links', {}),
+                    'message_id': unsub_info.get('message_id', '')
+                }
+                session_results.append(session_result)
 
-        return render_template('index.html', authenticated=True, results=results, error=None)
+        # Store minimal data in session for unsubscribe operations
+        session['scan_results'] = session_results
+
+        return render_template('index.html', authenticated=True, results=display_results, error=None)
     except Exception as e:
         return render_template('index.html', authenticated=True, results=None, error=str(e))
 
@@ -231,6 +246,16 @@ def unsubscribe():
     if not sender:
         return jsonify({'success': False, 'error': 'No sender specified'}), 400
 
+    # Track this sender as unsubscribed in the session
+    if 'unsubscribed_senders' not in session:
+        session['unsubscribed_senders'] = []
+
+    # Add to unsubscribed senders if not already there
+    if sender not in session['unsubscribed_senders']:
+        unsubscribed_senders = session['unsubscribed_senders']
+        unsubscribed_senders.append(sender)
+        session['unsubscribed_senders'] = unsubscribed_senders
+
     # Get stored scan results
     results = session.get('scan_results', [])
     sender_info = None
@@ -241,8 +266,55 @@ def unsubscribe():
             sender_info = result
             break
 
-    if not sender_info or 'unsubscribe_links' not in sender_info:
-        return jsonify({'success': False, 'error': 'No unsubscribe link found for this sender'}), 404
+    if not sender_info:
+        # If sender not found in session, try to rescan for this specific sender
+        service = get_gmail_service()
+        if not service:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        try:
+            # Get the most recent messages from this sender
+            query = f'from:{sender}'
+            msg_list = service.users().messages().list(
+                userId='me', q=query, maxResults=5
+            ).execute()
+            messages = msg_list.get('messages', [])
+
+            if not messages:
+                return jsonify({'success': False, 'error': f'No messages found from {sender}'}), 404
+
+            # Check each message for unsubscribe headers
+            for msg_meta in messages:
+                msg = service.users().messages().get(
+                    userId='me', id=msg_meta['id'], format='metadata',
+                    metadataHeaders=['From', 'List-Unsubscribe', 'Message-ID']
+                ).execute()
+
+                headers = {}
+                for header in msg['payload'].get('headers', []):
+                    headers[header['name']] = header['value']
+
+                if 'List-Unsubscribe' in headers:
+                    unsubscribe_header = headers['List-Unsubscribe']
+                    links = parse_unsubscribe_link(unsubscribe_header)
+
+                    if links:
+                        # Create a temporary sender_info
+                        sender_info = {
+                            'sender': sender,
+                            'unsubscribe_links': links,
+                            'message_id': msg_meta['id']
+                        }
+                        break
+
+            if not sender_info:
+                return jsonify({'success': False, 'error': 'No unsubscribe links found for this sender'}), 404
+
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Error rescanning for sender: {str(e)}'}), 500
+
+    if 'unsubscribe_links' not in sender_info or not sender_info['unsubscribe_links']:
+        return jsonify({'success': False, 'error': 'No unsubscribe link found for this sender. The sender may not provide unsubscribe options.'}), 404
 
     # Process the unsubscribe action based on the method
     try:
@@ -328,15 +400,45 @@ def batch_unsubscribe():
 
     results = []
     for sender in senders:
-        # Use the individual "unsubscribe" logic for each sender
-        # We simulate a form submission for each sender
-        form_data = {'sender': sender}
-        resp = unsubscribe()
-        results.append({
-            'sender': sender,
-            'success': resp.get('success', False),
-            'message': resp.get('message', 'Unknown error')
-        })
+        # Get stored scan results
+        scan_results = session.get('scan_results', [])
+        sender_info = None
+
+        # Find the sender in the results
+        for result in scan_results:
+            if result['sender'] == sender:
+                sender_info = result
+                break
+
+        # Determine the method (prefer http over mailto)
+        # If sender_info is None, the unsubscribe function will handle it with its fallback mechanism
+        if sender_info and 'unsubscribe_links' in sender_info:
+            method = 'http' if 'http' in sender_info['unsubscribe_links'] else 'mailto'
+            message_id = sender_info.get('message_id', '')
+        else:
+            # Default to http method if sender not found in scan results
+            method = 'http'
+            message_id = ''
+
+        # Create a request context with form data
+        with app.test_request_context(
+            '/unsubscribe', 
+            method='POST',
+            data={'sender': sender, 'method': method, 'message_id': message_id}
+        ):
+            # Call the unsubscribe function directly
+            resp = unsubscribe()
+            # Convert response to dict if it's a tuple (response, status_code)
+            if isinstance(resp, tuple):
+                resp_data = resp[0].get_json()
+            else:
+                resp_data = resp
+
+            results.append({
+                'sender': sender,
+                'success': resp_data.get('success', False),
+                'message': resp_data.get('message', 'Unknown error')
+            })
 
     return jsonify({
         'success': True,
@@ -351,23 +453,146 @@ def unsubscribe_all_high_percentage():
     if 'token' not in session:
         return jsonify({'success': False, 'error': 'Not authenticated'}), 401
 
-    threshold = request.json.get('threshold', 95)
-    results = session.get('scan_results', [])
-
-    high_percentage_senders = []
-    for result in results:
-        percentage = (result['unsubscribe_count'] / result['total_count']) * 100
-        if percentage >= threshold:
-            high_percentage_senders.append(result['sender'])
+    # Get high percentage senders directly from the request
+    # The frontend already has this information from the display results
+    high_percentage_senders = request.json.get('senders', [])
 
     if not high_percentage_senders:
+        threshold = request.json.get('threshold', 95)
         return jsonify({
             'success': False,
             'error': f'No senders found with ≥{threshold}% unsubscribe rate'
         }), 404
 
-    # Use the batch "unsubscribe" endpoint
-    return batch_unsubscribe()
+    # Create a new request with the senders
+    with app.test_request_context(
+        '/batch_unsubscribe',
+        method='POST',
+        content_type='application/json',
+        data=json.dumps({'senders': high_percentage_senders})
+    ):
+        # Call the batch_unsubscribe function
+        return batch_unsubscribe()
+
+
+@app.route('/delete_emails', methods=['POST'])
+def delete_emails():
+    """Delete all emails from a specific sender."""
+    if 'token' not in session:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    # Get sender from request
+    sender = request.form.get('sender')
+    if not sender:
+        return jsonify({'success': False, 'error': 'No sender specified'}), 400
+
+    # Check if the sender is in the unsubscribed list
+    unsubscribed_senders = session.get('unsubscribed_senders', [])
+    if sender not in unsubscribed_senders:
+        return jsonify({
+            'success': False, 
+            'error': 'You must unsubscribe from this sender before deleting emails'
+        }), 400
+
+    try:
+        service = get_gmail_service()
+        if not service:
+            return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+        # Search for emails from this sender
+        query = f'from:{sender}'
+        result = service.users().messages().list(userId='me', q=query).execute()
+        messages = result.get('messages', [])
+
+        # If no messages found
+        if not messages:
+            return jsonify({
+                'success': True,
+                'message': f'No emails found from {sender}',
+                'count': 0
+            })
+
+        # Delete each message (move to trash)
+        for message in messages:
+            try:
+                # First try to trash the message
+                service.users().messages().trash(userId='me', id=message['id']).execute()
+            except Exception as e:
+                # If trashing fails, try to delete the message
+                try:
+                    service.users().messages().delete(userId='me', id=message['id']).execute()
+                except Exception as inner_e:
+                    print(f"Error deleting message {message['id']}: {str(inner_e)}")
+                    # Re-raise the original exception if both methods fail
+                    raise e
+
+        return jsonify({
+            'success': True,
+            'message': f'Successfully deleted {len(messages)} emails from {sender}',
+            'count': len(messages)
+        })
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/check_unsubscribed_senders', methods=['GET'])
+def check_unsubscribed_senders():
+    """Return the list of senders that the user has unsubscribed from."""
+    if 'token' not in session:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    unsubscribed_senders = session.get('unsubscribed_senders', [])
+    return jsonify({
+        'success': True,
+        'unsubscribed_senders': unsubscribed_senders
+    })
+
+
+@app.route('/batch_delete_emails', methods=['POST'])
+def batch_delete_emails():
+    """Delete emails from multiple senders."""
+    if 'token' not in session:
+        return jsonify({'success': False, 'error': 'Not authenticated'}), 401
+
+    senders = request.json.get('senders', [])
+    if not senders:
+        return jsonify({'success': False, 'error': 'No senders specified'}), 400
+
+    results = []
+    total_deleted = 0
+
+    for sender in senders:
+        # Create a request context with form data
+        with app.test_request_context(
+            '/delete_emails', 
+            method='POST',
+            data={'sender': sender}
+        ):
+            # Call the delete_emails function directly
+            resp = delete_emails()
+            # Convert response to dict if it's a tuple (response, status_code)
+            if isinstance(resp, tuple):
+                resp_data = resp[0].get_json()
+            else:
+                resp_data = resp
+
+            count = resp_data.get('count', 0)
+            total_deleted += count
+
+            results.append({
+                'sender': sender,
+                'success': resp_data.get('success', False),
+                'message': resp_data.get('message', 'Unknown error'),
+                'count': count
+            })
+
+    return jsonify({
+        'success': True,
+        'results': results,
+        'total_deleted': total_deleted,
+        'message': f'Deleted a total of {total_deleted} emails from {len(results)} senders'
+    })
 
 
 # Required for Vercel
